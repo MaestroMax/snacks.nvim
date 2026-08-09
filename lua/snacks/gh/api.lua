@@ -133,6 +133,13 @@ local function get_opts(what, key)
   return base
 end
 
+--- Resolved api options (fields, text, transform) for a type
+---@param what "issue" | "pr"
+---@param key? "list" | "view"
+function M.opts(what, key)
+  return get_opts(what, key or "list")
+end
+
 ---@param args string[]
 ---@param options string[]
 ---@param opts table<string, string|boolean|nil>
@@ -170,7 +177,7 @@ function M.cmd(cb, opts)
     cmd = "gh",
     args = args,
     input = opts.input,
-    timeout = 10000,
+    timeout = opts.timeout or 10000,
     -- debug = true,
     on_exit = function(proc, err)
       if err then
@@ -210,6 +217,7 @@ function M.fetch(cb, opts)
     args = args,
     repo = opts.repo,
     notify = opts.notify,
+    timeout = opts.timeout,
   })
 end
 M.fetch_sync = wrap_sync(M.fetch)
@@ -291,6 +299,9 @@ end
 function M.list(what, cb, opts)
   opts = opts or {}
   local api_opts = get_opts(what, "list")
+  if opts.fields then
+    api_opts.fields = opts.fields
+  end
   local args = { what, "list" }
 
   vim.list_extend(args, { "--limit", tostring(opts.limit or 50) })
@@ -309,6 +320,7 @@ function M.list(what, cb, opts)
     args = args,
     fields = api_opts.fields,
     repo = opts.repo,
+    timeout = opts.timeout,
   })
 end
 

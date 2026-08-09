@@ -10,6 +10,8 @@
 
 ---@class snacks.picker.gh.list.Config: snacks.picker.gh.Config
 ---@field type "issue" | "pr"
+---@field fields? string[] override the fields to fetch (replaces the defaults)
+---@field timeout? number timeout in ms for the gh call
 
 ---@class snacks.picker.gh.api.Config: snacks.picker.gh.Config
 ---@field api snacks.gh.api.Api
@@ -22,6 +24,7 @@
 ---@field repo? string
 ---@field input? string
 ---@field notify? boolean
+---@field timeout? number timeout in ms (default 10000)
 ---@field on_error? fun(proc: snacks.spawn.Proc, err: string)
 
 ---@class snacks.gh.api.Api
