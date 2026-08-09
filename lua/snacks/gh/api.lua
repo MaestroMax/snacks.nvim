@@ -20,13 +20,12 @@ local config = {
       "body",
       "labels",
       "number",
-      "reactionGroups",
       "state",
       "title",
       "updatedAt",
       "url",
     },
-    view = { "comments" },
+    view = { "comments", "reactionGroups" },
     text = { "author", "hash", "label", "title" },
     options = { "app", "assignee", "author", "jq", "label", "repo", "search", "state" },
   },
@@ -46,9 +45,6 @@ local config = {
     options = { "base", "draft" },
     list = {
       "mergedAt",
-      "changedFiles",
-      "mergeable",
-      "mergeStateStatus",
       "isDraft",
     },
     view = {
@@ -60,6 +56,10 @@ local config = {
       "mergedAt",
       "statusCheckRollup",
       "reviews",
+      -- expensive fields, fetched on demand via need()
+      "changedFiles",
+      "mergeable",
+      "mergeStateStatus",
     },
     ---@param item snacks.picker.gh.Item
     transform = function(item)
