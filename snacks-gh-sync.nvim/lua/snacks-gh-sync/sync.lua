@@ -144,7 +144,12 @@ function M.load(repo, opts)
   local lines = vim.split(raw, "\n", { plain = true })
   local ok, header = pcall(vim.json.decode, lines[1] or "")
   ---@cast header snacks.gh.sync.Data
-  if not ok or type(header) ~= "table" or header.version ~= VERSION or not vim.deep_equal(header.fields, entry.data.fields) then
+  if
+    not ok
+    or type(header) ~= "table"
+    or header.version ~= VERSION
+    or not vim.deep_equal(header.fields, entry.data.fields)
+  then
     return entry -- stale format
   end
   entry.data.synced = type(header.synced) == "string" and header.synced or nil
