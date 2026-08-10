@@ -302,6 +302,30 @@ describe("gh.sync", function()
     assert.equals(0, #entry.pending)
   end)
 
+  it("records a watermark for a repo with no PRs", function()
+    local Sync = load()
+    queue = { {}, {} }
+    Sync.sync(repo, { notify = false })
+    assert.is_not_nil(Sync.load(repo).data.synced) -- else every open would full-resync
+
+    Sync.sync(repo, { notify = false, refresh = 0 })
+    assert.equals(2, #calls)
+    assert.is_not_nil(calls[2].search) -- a delta, not a second full sync
+  end)
+
+  it("rebuilds the memoized index when the field set changes", function()
+    local Sync = load()
+    queue = { { pr(1, "2024-06-01T10:00:00Z") }, { pr(1, "2024-06-01T10:00:00Z") } }
+    Sync.sync(repo, { notify = false })
+    assert.is_false(vim.tbl_contains(calls[1].fields, "body"))
+
+    -- same module instance: toggling `body` must not reuse the memoized entry
+    Sync.sync(repo, { notify = false, body = true })
+    assert.equals(2, #calls)
+    assert.is_true(vim.tbl_contains(calls[2].fields, "body"))
+    assert.is_nil(calls[2].search) -- a full resync, not a delta
+  end)
+
   it("debounces delta syncs", function()
     local Sync = load()
     queue = { { pr(1, "2024-06-01T10:00:00Z") }, {} }

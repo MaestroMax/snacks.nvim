@@ -65,6 +65,14 @@ local syncing = {} ---@type table<string, snacks.gh.sync.Handle>
 local last_delta = {} ---@type table<string, number> last delta sync per repo (`uv.now()` ms)
 local repos = {} ---@type table<string, string|false> resolved repo per git root
 
+--- Run `fn` synchronously in an unregistered coroutine, so `Async.running()` is nil
+--- inside it. Procs spawned there are not bound to the caller's task, so aborting
+--- the picker's finder (close, refresh, live-mode keystroke) cannot kill a sync.
+---@param fn fun()
+local function detached(fn)
+  coroutine.wrap(fn)()
+end
+
 --- Run `fn` on the main loop when called from a fast event (proc exit), directly otherwise.
 ---@param fn fun()
 local function schedule(fn)
@@ -85,16 +93,6 @@ local function fields_for(opts)
     table.insert(ret, "body")
     table.sort(ret)
   end
-  return ret
-end
-
---- Api options used to wrap raw items, with the indexed field set,
---- so `need()` is accurate for cache-restored items.
----@param entry snacks.gh.sync.Entry
----@return snacks.gh.api.Config
-local function api_opts(entry)
-  local ret = Api.opts("pr", "list")
-  ret.fields = vim.deepcopy(entry.data.fields)
   return ret
 end
 
@@ -119,12 +117,18 @@ end
 --- Load the index header for a repo. Cheap: items stay as undecoded lines
 --- until `M.hydrate` (or `M.items`) processes them. A persisted index with
 --- a different version or field set is discarded (treated as never-synced).
+--- Passing `opts` with a different field set than the loaded index rebuilds it,
+--- so toggling `body` takes effect instead of reusing the memoized entry.
 ---@param repo string
----@param opts? snacks.gh.sync.Opts picks the indexed field set on first load
+---@param opts? snacks.gh.sync.Opts picks the indexed field set
 ---@return snacks.gh.sync.Entry
 function M.load(repo, opts)
-  if indexes[repo] then
-    return indexes[repo]
+  local cached = indexes[repo]
+  if cached then
+    if not opts or vim.deep_equal(cached.data.fields, fields_for(opts)) then
+      return cached
+    end
+    indexes[repo] = nil -- a different field set needs a full resync
   end
   ---@type snacks.gh.sync.Entry
   local entry = {
@@ -135,13 +139,7 @@ function M.load(repo, opts)
     pending = {},
   }
   indexes[repo] = entry
-  local fd = io.open(M.path(repo), "r")
-  if not fd then
-    return entry
-  end
-  local raw = fd:read("*a")
-  fd:close()
-  local lines = vim.split(raw, "\n", { plain = true })
+  local lines = Snacks.picker.util.lines(M.path(repo))
   local ok, header = pcall(vim.json.decode, lines[1] or "")
   ---@cast header snacks.gh.sync.Data
   if
@@ -154,9 +152,6 @@ function M.load(repo, opts)
   end
   entry.data.synced = type(header.synced) == "string" and header.synced or nil
   table.remove(lines, 1)
-  while #lines > 0 and lines[#lines] == "" do
-    table.remove(lines)
-  end
   entry.pending = lines
   return entry
 end
@@ -193,7 +188,9 @@ function M.hydrate(repo, cb)
         cb(item)
       end
     end
-    local aopts, yield = api_opts(entry), Async.yielder()
+    -- wrap with the indexed field set, so `need()` stays accurate for cache-restored items
+    local aopts, yield = Api.opts("pr", "list"), Async.yielder()
+    aopts.fields = vim.deepcopy(entry.data.fields)
     while true do
       local line = entry.pending[entry.pi or 1]
       if not line then
@@ -233,19 +230,22 @@ end
 ---@param entry snacks.gh.sync.Entry
 function M.save(entry)
   local path = M.path(entry.data.repo)
+  -- unique per process: two nvim instances must never share a temp file offset
+  local tmp = ("%s.%d.tmp"):format(path, uv.os_getpid())
   local ok, err = pcall(function()
     vim.fn.mkdir(vim.fs.dirname(path), "p")
-    local fd = assert(io.open(path .. ".tmp", "w"), "failed to open `" .. path .. ".tmp`")
+    local fd = assert(io.open(tmp, "w"), "failed to open `" .. tmp .. "`")
     assert(fd:write(vim.json.encode(entry.data), "\n"))
     for _, item in ipairs(sorted(entry)) do
       local nr = item.item.number
       entry.enc[nr] = entry.enc[nr] or vim.json.encode(item.item)
       assert(fd:write(entry.enc[nr], "\n"))
     end
-    fd:close()
-    assert(uv.fs_rename(path .. ".tmp", path)) -- os.rename cannot replace an existing file on Windows
+    assert(fd:close()) -- a failed final flush must not rename a truncated index over the good one
+    assert(uv.fs_rename(tmp, path)) -- os.rename cannot replace an existing file on Windows
   end)
   if not ok then
+    pcall(uv.fs_unlink, tmp)
     Snacks.notify.error(("Failed to save the `gh` index for `%s`:\n%s"):format(entry.data.repo, err), {
       title = "Snacks GH",
       once = true,
@@ -288,6 +288,11 @@ local function apply(entry, items, full)
       end
     end
   end
+  if full and not entry.data.synced then
+    -- a repo with no PRs is still synced; without a watermark every open full-resyncs.
+    -- Deliberately a minute early: `>=` re-fetches the boundary, so overlap is free.
+    entry.data.synced = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 60) --[[@as string]]
+  end
   entry.dirty = entry.dirty or changed > 0
   return changed
 end
@@ -313,28 +318,40 @@ function M.sync(repo, opts)
   local entry = M.load(repo, opts)
   local notify = opts.notify ~= false
   local procs = {} ---@type snacks.spawn.Proc[]
-  local finishing = false
+  local waiters = {} ---@type snacks.picker.Async[]
+  local done = false
 
   ---@type snacks.gh.sync.Handle
   local handle = {
     active = function()
-      if finishing then
-        return true
+      if done then
+        return false
       end
       for _, proc in ipairs(procs) do
         if proc:running() or not proc.did_exit then
           return true
         end
       end
+      -- no procs yet: still starting. All procs dead without finishing: killed, so not active.
       return #procs == 0
     end,
+    --- Suspends the caller until the sync finishes. Waiters are resumed by `finish`,
+    --- never through `Proc.async`: `Proc:wait` rebinds that to the last waiter,
+    --- which would strand every earlier one.
     ---@async
     wait = function()
-      local i = 1
-      while procs[i] do
-        procs[i]:wait()
-        i = i + 1
+      if done then
+        return
       end
+      local async = Async.running()
+      if not async then
+        vim.wait(24 * 60 * 60 * 1000, function()
+          return done
+        end, 20)
+        return
+      end
+      waiters[#waiters + 1] = async
+      async:suspend()
     end,
   }
 
@@ -342,15 +359,21 @@ function M.sync(repo, opts)
   ---@param changed number
   ---@param fn? fun()
   local function finish(changed, fn)
-    finishing = true
     schedule(function()
       if fn then
         fn()
       end
-      syncing[repo] = nil
+      done = true
+      if syncing[repo] == handle then
+        syncing[repo] = nil
+      end
       if opts.on_done then
         opts.on_done(entry, changed)
       end
+      for _, async in ipairs(waiters) do
+        async:resume()
+      end
+      waiters = {}
     end)
   end
 
@@ -360,7 +383,7 @@ function M.sync(repo, opts)
       Snacks.notify(("Syncing all pull requests for `%s` …"):format(repo), { title = "Snacks GH" })
     end
     ---@param items? snacks.picker.gh.Item[]
-    procs[#procs + 1] = Api.list("pr", function(items)
+    local function on_items(items)
       if not items then
         return finish(0)
       elseif not full and #items >= DELTA_LIMIT then
@@ -377,7 +400,8 @@ function M.sync(repo, opts)
           Snacks.notify(("Synced %d pull requests for `%s`"):format(changed, repo), { title = "Snacks GH" })
         end
       end)
-    end, {
+    end
+    local list_opts = {
       repo = repo,
       state = "all",
       limit = full and (opts.limit or 10000) or DELTA_LIMIT,
@@ -385,7 +409,10 @@ function M.sync(repo, opts)
       fields = vim.deepcopy(entry.data.fields),
       -- a full sync of thousands of PRs can take minutes
       timeout = full and (opts.timeout or 10 * 60 * 1000) or 60 * 1000,
-    })
+    }
+    detached(function()
+      procs[#procs + 1] = Api.list("pr", on_items, list_opts)
+    end)
   end
 
   local full = opts.force or not entry.data.synced
@@ -393,11 +420,7 @@ function M.sync(repo, opts)
     -- debounce deltas
     local now = uv.now()
     if last_delta[repo] and now - last_delta[repo] < (opts.refresh or 60) * 1000 then
-      if opts.on_done then
-        schedule(function()
-          opts.on_done(entry, 0)
-        end)
-      end
+      finish(0)
       return handle
     end
     last_delta[repo] = now
