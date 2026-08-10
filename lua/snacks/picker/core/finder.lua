@@ -117,9 +117,14 @@ function M:run(picker)
   local finder = self._find(picker.opts, ctx)
   local limit = (picker.opts.live and picker.opts.limit_live or picker.opts.limit) or math.huge
 
+  -- `match_tick` marks an item as already matched at the matcher's current tick.
+  -- The tick only advances when the *pattern* changes, so a finder that re-emits
+  -- the same item objects (a cached or persistent index) would have them skipped
+  -- by a matcher run that the finder itself triggered, leaving the list empty.
+  -- Re-emitting an item means it is fresh for matching, like the score reset.
   ---@param item snacks.picker.finder.Item
   local function add(item)
-    item.idx, item.score = #self.items + 1, default_score
+    item.idx, item.score, item.match_tick = #self.items + 1, default_score, nil
     self.items[item.idx] = item
   end
 
@@ -130,7 +135,7 @@ function M:run(picker)
       local t = transform(item, ctx)
       item = type(t) == "table" and t or item
       if t ~= false then
-        item.idx, item.score = #self.items + 1, default_score
+        item.idx, item.score, item.match_tick = #self.items + 1, default_score, nil
         self.items[item.idx] = item
       end
     end

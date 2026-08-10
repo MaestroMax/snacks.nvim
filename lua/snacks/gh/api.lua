@@ -20,13 +20,12 @@ local config = {
       "body",
       "labels",
       "number",
-      "reactionGroups",
       "state",
       "title",
       "updatedAt",
       "url",
     },
-    view = { "comments" },
+    view = { "comments", "reactionGroups" },
     text = { "author", "hash", "label", "title" },
     options = { "app", "assignee", "author", "jq", "label", "repo", "search", "state" },
   },
@@ -46,9 +45,6 @@ local config = {
     options = { "base", "draft" },
     list = {
       "mergedAt",
-      "changedFiles",
-      "mergeable",
-      "mergeStateStatus",
       "isDraft",
     },
     view = {
@@ -60,6 +56,10 @@ local config = {
       "mergedAt",
       "statusCheckRollup",
       "reviews",
+      -- expensive fields, fetched on demand via need()
+      "changedFiles",
+      "mergeable",
+      "mergeStateStatus",
     },
     ---@param item snacks.picker.gh.Item
     transform = function(item)
@@ -116,14 +116,16 @@ local function clean_graphql(ret)
   return ret
 end
 
+--- Resolved api options (fields, text, transform) for a type
 ---@param what "issue" | "pr"
----@param key "list" | "view"
-local function get_opts(what, key)
+---@param key? "list" | "view"
+---@return snacks.gh.api.Config
+function M.opts(what, key)
   local base = vim.deepcopy(config.base)
   local specific = vim.deepcopy(config[what] or {})
   base.type = what
   base.fields = vim.list_extend(base.list or {}, specific.list or {})
-  if key ~= "list" then
+  if key and key ~= "list" then
     base.fields = vim.list_extend(base.fields, base[key] or {})
     base.fields = vim.list_extend(base.fields, specific[key] or {})
   end
@@ -170,7 +172,7 @@ function M.cmd(cb, opts)
     cmd = "gh",
     args = args,
     input = opts.input,
-    timeout = 10000,
+    timeout = opts.timeout or 10000,
     -- debug = true,
     on_exit = function(proc, err)
       if err then
@@ -190,9 +192,11 @@ function M.cmd(cb, opts)
             end
           end
         end)
-        return
+        -- always complete, so callers can tell a failed call from a pending one.
+        -- Without this, an aborted or timed-out proc never calls back at all.
+        return cb(proc)
       end
-      return cb(proc, not err and proc:out() or nil)
+      return cb(proc, proc:out())
     end,
   })
   return ret
@@ -210,6 +214,7 @@ function M.fetch(cb, opts)
     args = args,
     repo = opts.repo,
     notify = opts.notify,
+    timeout = opts.timeout,
   })
 end
 M.fetch_sync = wrap_sync(M.fetch)
@@ -290,7 +295,16 @@ end
 ---@param opts? snacks.picker.gh.Config
 function M.list(what, cb, opts)
   opts = opts or {}
-  local api_opts = get_opts(what, "list")
+  local api_opts = M.opts(what, "list")
+  if opts.fields then
+    api_opts.fields = vim.deepcopy(opts.fields)
+    -- `Item` derives `repo`/`uri` from these, so they are never optional
+    for _, field in ipairs({ "number", "url" }) do
+      if not vim.tbl_contains(api_opts.fields, field) then
+        api_opts.fields[#api_opts.fields + 1] = field
+      end
+    end
+  end
   local args = { what, "list" }
 
   vim.list_extend(args, { "--limit", tostring(opts.limit or 50) })
@@ -309,6 +323,7 @@ function M.list(what, cb, opts)
     args = args,
     fields = api_opts.fields,
     repo = opts.repo,
+    timeout = opts.timeout,
   })
 end
 
@@ -317,7 +332,7 @@ end
 ---@param opts? { fields?: string[], force?: boolean }
 function M.view(cb, item, opts)
   opts = opts or {}
-  local api_opts = get_opts(item.type, "view")
+  local api_opts = M.opts(item.type, "view")
   if opts.fields then
     api_opts.fields = vim.list_extend(api_opts.fields, opts.fields)
   end
@@ -536,7 +551,7 @@ function M.current_pr()
   end
 
   -- try with `pr view` first
-  local api_opts = get_opts("pr", "list")
+  local api_opts = M.opts("pr", "list")
   pr = M.fetch_sync({
     args = { "pr", "view" },
     fields = api_opts.fields,

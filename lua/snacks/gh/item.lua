@@ -151,7 +151,9 @@ function M:update(data, fields)
   if self.opts.transform then
     self.opts.transform(self)
   end
-  self.text = Snacks.picker.util.text(self.item, self.opts.text or self.opts.fields or {})
+  -- from `self`, not `self.item`: `author` is a table on the raw payload, and
+  -- `hash`/`label` only exist here, so the raw one yields "table: 0x… <title>"
+  self.text = Snacks.picker.util.text(self, self.opts.text or self.opts.fields or {})
 end
 
 ---@param item snacks.gh.api.View
