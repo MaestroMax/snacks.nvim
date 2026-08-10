@@ -71,6 +71,20 @@ titles (and bodies with `body = true`). Qualifiers the index can't answer
 (`review:`, `involves:`, ...) warn instead of returning silently wrong
 results.
 
+The two modes match differently, by design:
+
+| mode | matching | ranking + highlights |
+| ---- | -------- | -------------------- |
+| normal (default) | snacks fuzzy over author, `#number`, labels, title | yes |
+| live (toggled) | GitHub qualifiers + substring, like GitHub itself | no |
+
+The picker feeds live input to the finder rather than to the matcher, so live
+mode is deliberately GitHub-shaped: qualifiers filter, free text matches as a
+plain substring. Stay in normal mode for fuzzy search over the whole history;
+switch to live when you want `is:open author:@me` semantics. Config filters
+(`state`, `author`, `label`, `base`, `draft`) apply in **both** modes, so the
+common cases need no typing at all.
+
 ## Options
 
 | option    | default | description |
