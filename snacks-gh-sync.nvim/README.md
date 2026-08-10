@@ -16,8 +16,12 @@ repo's per-session sync cost is a single API request.
 ## Requirements
 
 - [snacks.nvim](https://github.com/folke/snacks.nvim) with the `gh` list
-  field/timeout override patches (PR pending upstream; until merged, use a
-  fork that includes them: `Api.opts()`, `M.list` `opts.fields`/`opts.timeout`)
+  field/timeout override patches and the finder `match_tick` reset (PRs pending
+  upstream; until merged, use a fork that includes them: `Api.opts()`, `M.list`
+  `opts.fields`/`opts.timeout`, and `Finder:run` clearing `item.match_tick`).
+  Without the last one, live mode renders an empty list after the first query —
+  this source re-emits the same item objects from its index every run, and the
+  matcher skips items it already matched at the current tick.
 - The [`gh` CLI](https://cli.github.com/), authenticated
 
 ## Install (lazy.nvim)
