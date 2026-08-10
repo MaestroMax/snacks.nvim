@@ -71,19 +71,20 @@ titles (and bodies with `body = true`). Qualifiers the index can't answer
 (`review:`, `involves:`, ...) warn instead of returning silently wrong
 results.
 
-The two modes match differently, by design:
+The two modes match differently, mirroring `gh_pr`:
 
 | mode | matching | ranking + highlights |
 | ---- | -------- | -------------------- |
 | normal (default) | snacks fuzzy over author, `#number`, labels, title | yes |
-| live (toggled) | GitHub qualifiers + substring, like GitHub itself | no |
+| live (toggled) | GitHub qualifiers + substring, as GitHub matches | no |
 
-The picker feeds live input to the finder rather than to the matcher, so live
-mode is deliberately GitHub-shaped: qualifiers filter, free text matches as a
-plain substring. Stay in normal mode for fuzzy search over the whole history;
-switch to live when you want `is:open author:@me` semantics. Config filters
-(`state`, `author`, `label`, `base`, `draft`) apply in **both** modes, so the
-common cases need no typing at all.
+This is deliberate parity, not a limitation. The picker routes live input to
+the finder rather than to the matcher, so stock `gh_pr` in live mode ships the
+query to `gh --search` and does no local fuzzy matching either — adding fuzzy
+here would make live mode diverge from the picker it mirrors. Stay in normal
+mode for fuzzy search over the whole history; switch to live when you want
+`is:open author:@me` semantics. Config filters (`state`, `author`, `label`,
+`base`, `draft`) apply in **both** modes, so the common cases need no typing.
 
 ## Options
 
