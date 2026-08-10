@@ -29,14 +29,9 @@ end
 ---@param neg string
 ---@param val snacks.gh.search.Pred
 local function add(preds, neg, val)
-  if neg == "-" then
-    local pred = val
-    ---@param item snacks.picker.gh.Item
-    val = function(item)
-      return not pred(item)
-    end
-  end
-  preds[#preds + 1] = val
+  preds[#preds + 1] = neg == "-" and function(item)
+    return not val(item)
+  end or val
 end
 
 --- Parse a query into a predicate over indexed items.
@@ -56,6 +51,10 @@ function M.parse(q, opts)
   -- protect spaces in quoted values, e.g. label:"help wanted"
   q = q:gsub('(%-?%w+:)"([^"]*)"', function(k, v)
     return k .. v:gsub("%s", "\1")
+  end)
+  -- and in bare quoted phrases, e.g. "race condition"
+  q = q:gsub('"([^"]*)"', function(v)
+    return (v:gsub("%s", "\1"))
   end)
 
   for tok in q:gmatch("%S+") do
@@ -109,8 +108,6 @@ function M.parse(q, opts)
         else
           unsupported[#unsupported + 1] = tok
         end
-      elseif key == "in" then -- luacheck: ignore
-        -- free text always matches what the index has
       else
         unsupported[#unsupported + 1] = tok
       end
@@ -161,14 +158,10 @@ function M.filter(opts, search)
   if opts.draft ~= nil then
     q[#q + 1] = "draft:" .. tostring(opts.draft)
   end
-  if opts.author then
-    q[#q + 1] = "author:" .. opts.author
-  end
-  if opts.label then
-    q[#q + 1] = ('label:"%s"'):format(opts.label)
-  end
-  if opts.base then
-    q[#q + 1] = "base:" .. opts.base
+  for _, key in ipairs({ "author", "label", "base" }) do
+    if opts[key] then
+      q[#q + 1] = ('%s:"%s"'):format(key, opts[key])
+    end
   end
   q[#q + 1] = search or ""
   local query = M.parse(vim.trim(table.concat(q, " ")), { body = opts.body })

@@ -31,15 +31,10 @@ function M.finder(opts, ctx)
 
     -- config filters plus the live-mode query, evaluated locally
     local query = require("snacks-gh-sync.search").filter(opts, search)
-    local emit = cb
-    if query.pred then
-      ---@param item snacks.picker.gh.Item
-      emit = function(item)
-        if query.pred(item) then
-          cb(item)
-        end
-      end
-    end
+    ---@param item snacks.picker.gh.Item
+    local emit = query.pred and function(item)
+      return query.pred(item) and cb(item)
+    end or cb
 
     local entry = Sync.load(repo, { body = opts.body })
     if not entry.data.synced then

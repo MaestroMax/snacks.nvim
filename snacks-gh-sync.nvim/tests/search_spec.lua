@@ -74,6 +74,12 @@ describe("gh.search", function()
     assert.is_false(search().parse("mutex locking missing", { body = true }).pred(it1))
   end)
 
+  it("matches quoted free-text phrases", function()
+    local it1 = item({ title = "fix: race condition in the scheduler" })
+    assert.is_true(search().parse('"race condition"').pred(it1))
+    assert.is_false(search().parse('"condition race"').pred(it1))
+  end)
+
   it("parses sort and collects unsupported qualifiers", function()
     local q = search().parse("sort:created-asc review:approved involves:me fix")
     assert.same({ field = "createdAt", desc = false }, q.sort)
