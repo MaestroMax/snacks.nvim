@@ -25,9 +25,9 @@ end
 ---@field sort? {field: "updatedAt"|"createdAt", desc: boolean}
 ---@field unsupported string[]
 
----@param val string
----@param neg string
 ---@param preds snacks.gh.search.Pred[]
+---@param neg string
+---@param val snacks.gh.search.Pred
 local function add(preds, neg, val)
   if neg == "-" then
     local pred = val
