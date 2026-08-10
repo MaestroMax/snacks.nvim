@@ -243,7 +243,7 @@ function M.save(entry)
       assert(fd:write(entry.enc[nr], "\n"))
     end
     fd:close()
-    assert(os.rename(path .. ".tmp", path))
+    assert(uv.fs_rename(path .. ".tmp", path)) -- os.rename cannot replace an existing file on Windows
   end)
   if not ok then
     Snacks.notify.error(("Failed to save the `gh` index for `%s`:\n%s"):format(entry.data.repo, err), {
