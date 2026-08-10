@@ -42,7 +42,7 @@ function M.gh(opts, ctx)
   ---@async
   return function(cb)
     Api.list(opts.type, function(items)
-      for _, item in ipairs(items) do
+      for _, item in ipairs(items or {}) do
         cb(item)
       end
     end, opts):wait()
