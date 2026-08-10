@@ -26,6 +26,28 @@ local LEAN_FIELDS = {
 
 local VERSION = 2 -- bump to invalidate persisted indexes
 local DELTA_LIMIT = 1000 -- the GitHub search API caps any query at 1000 results
+local DELTA_PAGES = 50 -- backstop on delta paging (50k updates is not a delta)
+--- GitHub's search index is asynchronous and can lag the API by over an hour, and it
+--- can index out of order. Re-querying a window before the watermark keeps an update
+--- that was invisible last time from being skipped forever.
+local DELTA_LAG = 24 * 60 * 60
+
+--- Shift an ISO-8601 `Z` timestamp by `seconds`
+---@param iso string
+---@param seconds number
+---@return string
+local function shift(iso, seconds)
+  local y, mo, d, h, mi, s = iso:match("^(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)Z$")
+  if not y then
+    return iso
+  end
+  ---@diagnostic disable-next-line: param-type-mismatch
+  local t = os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = s, isdst = false })
+  local now = os.time()
+  local utc = os.date("!*t", now) --[[@as osdate]]
+  utc.isdst = false
+  return os.date("!%Y-%m-%dT%H:%M:%SZ", t + os.difftime(now, os.time(utc)) + seconds) --[[@as string]]
+end
 -- resolved at module load, so `M.path` is safe in fast events
 local CACHE_DIR = vim.fn.stdpath("cache") .. "/snacks/gh-sync"
 
@@ -188,9 +210,10 @@ function M.hydrate(repo, cb)
         cb(item)
       end
     end
-    -- wrap with the indexed field set, so `need()` stays accurate for cache-restored items
+    -- wrap with the indexed field set, so `need()` stays accurate for cache-restored items.
+    -- `repo` is known, so `Item:update` skips deriving it from each url (~48% of wrap cost).
     local aopts, yield = Api.opts("pr", "list"), Async.yielder()
-    aopts.fields = vim.deepcopy(entry.data.fields)
+    aopts.fields, aopts.repo = vim.deepcopy(entry.data.fields), repo
     while true do
       local line = entry.pending[entry.pi or 1]
       if not line then
@@ -377,35 +400,54 @@ function M.sync(repo, opts)
     end)
   end
 
+  local total, pages = 0, 0
+
   ---@param full? boolean
-  local function start(full)
+  ---@param bound? string delta cursor: resume from this ISO-8601 `updatedAt`
+  local function start(full, bound)
     if full and notify then
       Snacks.notify(("Syncing all pull requests for `%s` …"):format(repo), { title = "Snacks GH" })
     end
+    local limit = full and (opts.limit or 10000) or DELTA_LIMIT
+    bound = bound or shift(entry.data.synced or "", -DELTA_LAG)
     ---@param items? snacks.picker.gh.Item[]
     local function on_items(items)
       if not items then
-        return finish(0)
-      elseif not full and #items >= DELTA_LIMIT then
-        -- the search cap may have truncated the delta, so sync everything instead
-        return start(true)
+        return finish(total)
       end
-      local changed = apply(entry, items, full)
-      if changed == 0 and not full then
+      total, pages = total + apply(entry, items, full), pages + 1
+      if not full and #items >= limit and pages < DELTA_PAGES then
+        -- a full page may have been truncated by the search cap. Resume ascending
+        -- from the newest item seen: every page commits the watermark, whereas
+        -- escalating to a full sync would discard the index it just truncated.
+        local next_bound = entry.data.synced
+        if next_bound and next_bound > bound then
+          return start(false, next_bound)
+        end
+      end
+      if total == 0 and not full then
         return finish(0)
       end
-      finish(changed, function()
+      finish(total, function()
         M.save(entry)
         if full and notify then
-          Snacks.notify(("Synced %d pull requests for `%s`"):format(changed, repo), { title = "Snacks GH" })
+          local msg = ("Synced %d pull requests for `%s`"):format(total, repo)
+          if #items >= limit then
+            -- the index is a truncated slice; saying "synced" would be a lie
+            Snacks.notify.warn(msg .. ("\nStopped at `limit = %d`; raise it for the full history."):format(limit), {
+              title = "Snacks GH",
+            })
+          else
+            Snacks.notify(msg, { title = "Snacks GH" })
+          end
         end
       end)
     end
     local list_opts = {
       repo = repo,
       state = "all",
-      limit = full and (opts.limit or 10000) or DELTA_LIMIT,
-      search = not full and ("updated:>=%s sort:updated-desc"):format(entry.data.synced) or nil,
+      limit = limit,
+      search = not full and ("updated:>=%s sort:updated-asc"):format(bound) or nil,
       fields = vim.deepcopy(entry.data.fields),
       -- a full sync of thousands of PRs can take minutes
       timeout = full and (opts.timeout or 10 * 60 * 1000) or 60 * 1000,

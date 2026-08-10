@@ -179,7 +179,8 @@ describe("gh.sync", function()
 
     assert.equals(2, changed)
     assert.equals(2, #calls)
-    assert.equals("updated:>=2024-06-02T10:00:00Z sort:updated-desc", calls[2].search)
+    -- a day before the watermark: the search index lags and can index out of order
+    assert.equals("updated:>=2024-06-01T10:00:00Z sort:updated-asc", calls[2].search)
     assert.equals("all", calls[2].state)
     assert.equals(1000, calls[2].limit)
 
@@ -200,16 +201,16 @@ describe("gh.sync", function()
     assert.equals("2024-06-03T10:00:00Z", Sync.load(repo).data.synced)
   end)
 
-  it("delta sync hitting the search cap falls back to a full sync", function()
+  it("delta sync pages instead of discarding the index when it hits the cap", function()
     local Sync = load()
-    local truncated = {} ---@type snacks.gh.Item[]
+    local capped = {} ---@type snacks.gh.Item[]
     for i = 1, 1000 do
-      truncated[i] = pr(100 + i, "2024-06-03T10:00:00Z")
+      capped[i] = pr(100 + i, "2024-06-03T10:00:00Z")
     end
     queue = {
       { pr(1, "2024-06-01T10:00:00Z"), pr(2, "2024-06-02T10:00:00Z") },
-      truncated,
-      { pr(2, "2024-06-03T11:00:00Z"), pr(3, "2024-06-04T10:00:00Z") }, -- full snapshot, pr 1 was deleted
+      capped, -- a full page: may have been truncated by the 1000-result cap
+      { pr(3, "2024-06-04T10:00:00Z") },
     }
     Sync.sync(repo, { notify = false })
 
@@ -222,20 +223,16 @@ describe("gh.sync", function()
     })
 
     assert.equals(3, #calls)
-    assert.is_not_nil(calls[2].search) -- the delta
-    assert.is_nil(calls[3].search) -- the full sync fallback
-    assert.equals("all", calls[3].state)
-    assert.equals(10000, calls[3].limit)
+    assert.is_not_nil(calls[2].search)
+    -- paged, never escalated to a full sync: that would have wiped the index
+    assert.is_not_nil(calls[3].search)
+    assert.equals("updated:>=2024-06-03T10:00:00Z sort:updated-asc", calls[3].search)
 
-    assert.equals(2, changed)
+    assert.equals(1001, changed)
     local items = Sync.items(repo)
-    assert.equals(2, #items) -- full snapshot replaced the index (and purged pr 1)
-    assert.same(
-      { 3, 2 },
-      vim.tbl_map(function(item)
-        return item.number
-      end, items)
-    )
+    assert.equals(1003, #items) -- everything kept: 2 seeded + 1000 paged + 1
+    assert.is_not_nil(Sync.load(repo).items[1]) -- the pre-delta index survived
+    assert.equals(3, items[1].number) -- newest first
     assert.equals("2024-06-04T10:00:00Z", Sync.load(repo).data.synced)
   end)
 
